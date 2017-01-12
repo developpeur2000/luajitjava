@@ -1,0 +1,5 @@
+#############################################################
+#Windows
+JDK= C:\Program Files\Java\jdk1.8.0_112
+JAR_FILE= luajitjava.jar
+
