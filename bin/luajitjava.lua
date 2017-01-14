@@ -163,25 +163,22 @@ javaIndex = function(self, key)
     return javaValue(self)
   end
   
-  print("looking for",self,key)
   local field
   if ffi.istype(JavaObjectType, self) then
     field = luajitjava_bindings.checkObjectField(self, key)
   elseif ffi.istype(JavaClassType, self) then
     field = luajitjava_bindings.checkClassField(self, key)
   end
-  if luajitjava_bindings.isNull(field) == 0 then
-    print("found field")
+  if field and luajitjava_bindings.isNull(field) == 0 then
     return field
   else
     --not a field, consider it is a method
-    local proxy_func = function(self, ...)
+    local proxy_func = function(foo, ...)
       local lib_args = pack_lib_args({self, key}, {...})
       if not lib_args then
         print("java_object : invalid method params")
         return
       end
-      print("run method")
       local result_object
       if ffi.istype(JavaObjectType, self) then
         result_object = luajitjava_bindings.runObjectMethod(unpack(lib_args))
@@ -204,6 +201,7 @@ javaValue = function(self)
     return
   end
   if not ffi.istype(JavaObjectType, self) then
+    print("java value: java element doesn't seem to be an object")
     return
   end
   local type = luajitjava_bindings.getObjectType(self)
@@ -229,6 +227,7 @@ javaValue = function(self)
     return ffi.string(luajitjava_bindings.getObjectStringValue(self))
   elseif type == luajitjava_bindings.JTYPE_OBJECT then
     --the object is not a type object
+    print("java value: trying to get the value of an object that is not a type value")
     return nil
   else
     print("java value: use of an unknown java type")
@@ -265,9 +264,6 @@ function luajitjava.new_java_object(java_class, ...)
   if not lib_args then
     print("new_java_object : invalid constructor params")
     return
-  end
-  for i,v in ipairs(lib_args) do
-    print(i,v)
   end
   if (luajitjava_bindings.javaNew(unpack(lib_args)) ~= 0) then
     return new_object

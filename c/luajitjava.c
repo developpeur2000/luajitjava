@@ -740,7 +740,7 @@ ljJavaObject_t* runObjectMethod(ljJavaObject_t* objectInterface, const char * me
 		return NULL;
 	}
 
-	if (resultObj != NULL) {
+	if (resultObj != NULL && !(*javaEnv)->IsSameObject(javaEnv, resultObj, NULL)) {
 		returnObject = malloc(sizeof(ljJavaObject_t));
 		returnObject->javaEnv = (void*)javaEnv;
 		returnObject->object = (*javaEnv)->NewGlobalRef(javaEnv, resultObj);

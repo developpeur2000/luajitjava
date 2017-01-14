@@ -53,10 +53,10 @@ public final class LuaJitJavaAPI
 		if (methodParams.length != providedArgs.length)
 			return false;
 		for (int j = 0; j < methodParams.length; j++) {
-			System.out.println("class method type vs args type");
-			System.out.println(methodParams[j].toString());
+			//System.out.println("class method type vs args type");
+			//System.out.println(methodParams[j].toString());
 			argClass = providedArgs[j].getClass();
-			System.out.println(argClass.toString());
+			//System.out.println(argClass.toString());
 			if (!methodParams[j].isAssignableFrom(argClass)) {
 				//check primitive data types correspondance
 				if (methodParams[j] == byte.class && argClass == Byte.class) {
@@ -116,8 +116,8 @@ public final class LuaJitJavaAPI
    * @throws LuaException
    */
 	public static Object javaNew(Class clazz, Object[] args) throws LuaException {
-		System.out.println("look for class constructor");
-		System.out.println(clazz.toString());
+		//System.out.println("look for class constructor");
+		//System.out.println(clazz.toString());
 		Constructor[] constructors = clazz.getConstructors();
 		Constructor constructor = null;
 		// gets method and arguments
@@ -236,8 +236,8 @@ public final class LuaJitJavaAPI
 	}
 	
 	private static Method getMethod(Class clazz, String methodName, Object[] args) {
-		System.out.println("look for class method");
-		System.out.println(clazz.toString());
+		//System.out.println("look for class method");
+		//System.out.println(clazz.toString());
 		Method[] methods = clazz.getMethods();
 		Method method = null;
 
