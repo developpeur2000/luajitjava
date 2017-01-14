@@ -52,8 +52,7 @@ int isNull(void* ptr);
 ]]
 
 --load the luajitjava bindings C library
---local luajitjava_bindings = ffi.load(current_dir .. "luajitjava.dll")
-local luajitjava_bindings = ffi.load("D:\\donnees\\webdesign\\07E007-kidscode\\luajitjava-developpeur2000\\luajitjava\\x64\\Debug\\luajitjava.dll")
+local luajitjava_bindings = ffi.load(current_dir .. "luajitjava.dll")
 
 --give access to arg types
 luajitjava.JTYPE_NONE = luajitjava_bindings.JTYPE_NONE
@@ -76,7 +75,7 @@ function luajitjava.java_init(class_path)
   if java_env then
     return
   end
-  java_env = luajitjava_bindings.javaStart(string.format("%s;%sluajitjava.debug.jar", class_path, current_dir))
+  java_env = luajitjava_bindings.javaStart(string.format("%s;%sluajitjava.jar", class_path, current_dir))
 end
 
 --utility func to prepare params from varargs
@@ -161,7 +160,7 @@ javaIndex = function(self, key)
   
   --redirect call to __value
   if key == "__value" then
-    return javaValue
+    return javaValue(self)
   end
   
   print("looking for",self,key)
