@@ -45,6 +45,12 @@ DllExport ljJavaObject_t* runClassMethod(ljJavaClass_t* classInterface, const ch
 DllExport int javaNew(ljJavaObject_t* objectInterface, ljJavaClass_t* classInterface, int nArgs, ...);
 DllExport ljJavaObject_t* checkObjectField(ljJavaObject_t* objectInterface, const char * key);
 DllExport ljJavaObject_t* runObjectMethod(ljJavaObject_t* objectInterface, const char * methodName, int nArgs, ...);
+DllExport int getObjectType(ljJavaObject_t* objectInterface);
+DllExport int getObjectIntValue(ljJavaObject_t* objectInterface);
+DllExport long getObjectLongValue(ljJavaObject_t* objectInterface);
+DllExport float getObjectFloatValue(ljJavaObject_t* objectInterface);
+DllExport double getObjectDoubleValue(ljJavaObject_t* objectInterface);
+DllExport const char* getObjectStringValue(ljJavaObject_t* objectInterface);
 
 #ifdef __cplusplus
 }

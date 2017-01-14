@@ -41,12 +41,19 @@ ljJavaObject_t* runClassMethod(ljJavaClass_t* classInterface, const char * metho
 int javaNew(ljJavaObject_t* objectInterface, ljJavaClass_t* classInterface, int nArgs, ...);
 ljJavaObject_t* checkObjectField(ljJavaObject_t* objectInterface, const char * key);
 ljJavaObject_t* runObjectMethod(ljJavaObject_t* objectInterface, const char * methodName, int nArgs, ...);
+int getObjectType(ljJavaObject_t* objectInterface);
+int getObjectIntValue(ljJavaObject_t* objectInterface);
+long getObjectLongValue(ljJavaObject_t* objectInterface);
+float getObjectFloatValue(ljJavaObject_t* objectInterface);
+double getObjectDoubleValue(ljJavaObject_t* objectInterface);
+const char* getObjectStringValue(ljJavaObject_t* objectInterface);
 
 int isNull(void* ptr);
 ]]
 
 --load the luajitjava bindings C library
-local luajitjava_bindings = ffi.load(current_dir .. "luajitjava.dll")
+--local luajitjava_bindings = ffi.load(current_dir .. "luajitjava.dll")
+local luajitjava_bindings = ffi.load("D:\\donnees\\webdesign\\07E007-kidscode\\luajitjava-developpeur2000\\luajitjava\\x64\\Debug\\luajitjava.dll")
 
 --give access to arg types
 luajitjava.JTYPE_NONE = luajitjava_bindings.JTYPE_NONE
@@ -64,12 +71,12 @@ luajitjava.JTYPE_OBJECT = luajitjava_bindings.JTYPE_OBJECT
 
 --this method start the java virtual machine and load the luajitjava bindings java proxy library
 -- and store the java environment in a global variable
-java_env = nil
+local java_env = nil
 function luajitjava.java_init(class_path)
   if java_env then
     return
   end
-  java_env = luajitjava_bindings.javaStart(string.format("%s;%sluajitjava.jar", class_path, current_dir))
+  java_env = luajitjava_bindings.javaStart(string.format("%s;%sluajitjava.debug.jar", class_path, current_dir))
 end
 
 --utility func to prepare params from varargs
@@ -133,11 +140,30 @@ local function pack_lib_args(other_args ,lua_arg_table)
   return lib_args
 end
 
---common callback to get fields or methods of java classes and objects
-local function javaIndex(self, key)
+--predeclarations of functions
+local javaIndex
+local javaValue
+
+--get lua types to instanciate c objects and add metatable for direct calls to parameters or methods
+local metatable = {
+  __index = function(self, key)
+    return javaIndex(self, key)
+  end
+}
+JavaClassType = ffi.metatype("ljJavaClass_t", metatable)
+JavaObjectType = ffi.metatype("ljJavaObject_t", metatable)
+
+--callback common to classes and objects to get fields or methods
+javaIndex = function(self, key)
   if not java_env then
     return
   end
+  
+  --redirect call to __value
+  if key == "__value" then
+    return javaValue
+  end
+  
   print("looking for",self,key)
   local field
   if ffi.istype(JavaObjectType, self) then
@@ -172,17 +198,45 @@ local function javaIndex(self, key)
   end
 end
 
---get lua types to instanciate c objects and add metatable for direct calls to parameters or methods
--- java class type
-local class_mt = {
-  __index = javaIndex,
-}
-JavaClassType = ffi.metatype("ljJavaClass_t", class_mt)
--- java object type
-local object_mt = {
-  __index = javaIndex,
-}
-JavaObjectType = ffi.metatype("ljJavaObject_t", object_mt)
+
+--get value of a java object as a lua value, only works on type objects
+javaValue = function(self)
+  if not java_env then
+    return
+  end
+  if not ffi.istype(JavaObjectType, self) then
+    return
+  end
+  local type = luajitjava_bindings.getObjectType(self)
+  if type == luajitjava_bindings.JTYPE_BYTE then
+    return luajitjava_bindings.getObjectIntValue(self)
+  elseif type == luajitjava_bindings.JTYPE_SHORT then
+    return luajitjava_bindings.getObjectIntValue(self)
+  elseif type == luajitjava_bindings.JTYPE_INT then
+    return luajitjava_bindings.getObjectIntValue(self)
+  elseif type == luajitjava_bindings.JTYPE_LONG then
+    --lua cannot handle 64bits data, this would return a cdata object
+    --return luajitjava_bindings.getObjectLongValue(self)
+    return nil
+  elseif type == luajitjava_bindings.JTYPE_FLOAT then
+    return luajitjava_bindings.getObjectFloatValue(self)
+  elseif type == luajitjava_bindings.JTYPE_DOUBLE then
+    return luajitjava_bindings.getObjectDoubleValue(self)
+  elseif type == luajitjava_bindings.JTYPE_BOOLEAN then
+    return luajitjava_bindings.getObjectIntValue(self)
+  elseif type == luajitjava_bindings.JTYPE_CHAR then
+    return luajitjava_bindings.getObjectIntValue(self)
+  elseif type == luajitjava_bindings.JTYPE_STRING then
+    return ffi.string(luajitjava_bindings.getObjectStringValue(self))
+  elseif type == luajitjava_bindings.JTYPE_OBJECT then
+    --the object is not a type object
+    return nil
+  else
+    print("java value: use of an unknown java type")
+    return nil
+  end
+end
+
 
 function luajitjava.get_java_class(class_name)
   if not java_env then

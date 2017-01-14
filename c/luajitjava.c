@@ -64,18 +64,27 @@ static jobject	 java_class_loader = NULL;
 //type classes to be used when transmitting method or constructor parameters
 static jobject	 java_byte_class = NULL;
 static jmethodID java_new_byte = NULL;
+static jmethodID java_byte_value = NULL;
 static jobject	 java_short_class = NULL;
 static jmethodID java_new_short = NULL;
+static jmethodID java_short_value = NULL;
 static jobject	 java_int_class = NULL;
 static jmethodID java_new_int = NULL;
+static jmethodID java_int_value = NULL;
 static jobject	 java_long_class = NULL;
 static jmethodID java_new_long = NULL;
+static jmethodID java_long_value = NULL;
 static jobject	 java_float_class = NULL;
 static jmethodID java_new_float = NULL;
+static jmethodID java_float_value = NULL;
 static jobject	 java_double_class = NULL;
 static jmethodID java_new_double = NULL;
+static jmethodID java_double_value = NULL;
 static jobject	 java_boolean_class = NULL;
 static jmethodID java_new_boolean = NULL;
+static jmethodID java_boolean_value = NULL;
+static jobject	 java_string_class = NULL;
+
 
 //utility function to check for exception after jni calls
 jobject checkException(JNIEnv* javaEnv) {
@@ -194,6 +203,12 @@ int bindJavaBaseLinks(JNIEnv* env)
 		fprintf(stderr, "Could not find constructor method of java.lang.Byte\n");
 		return 0;
 	}
+	java_byte_value = (*env)->GetMethodID(env, java_byte_class, "intValue", "()I");
+	if (!java_byte_value)
+	{
+		fprintf(stderr, "Could not find value method of java.lang.Byte\n");
+		return 0;
+	}
 	java_short_class = (*env)->FindClass(env, "java/lang/Short");
 	if (java_short_class == NULL)
 	{
@@ -204,6 +219,12 @@ int bindJavaBaseLinks(JNIEnv* env)
 	if (!java_new_short)
 	{
 		fprintf(stderr, "Could not find constructor method of java.lang.Short\n");
+		return 0;
+	}
+	java_short_value = (*env)->GetMethodID(env, java_short_class, "intValue", "()I");
+	if (!java_short_value)
+	{
+		fprintf(stderr, "Could not find value method of java.lang.Short\n");
 		return 0;
 	}
 	java_int_class = (*env)->FindClass(env, "java/lang/Integer");
@@ -218,6 +239,12 @@ int bindJavaBaseLinks(JNIEnv* env)
 		fprintf(stderr, "Could not find constructor method of java.lang.Integer\n");
 		return 0;
 	}
+	java_int_value = (*env)->GetMethodID(env, java_int_class, "intValue", "()I");
+	if (!java_int_value)
+	{
+		fprintf(stderr, "Could not find value method of java.lang.Integer\n");
+		return 0;
+	}
 	java_long_class = (*env)->FindClass(env, "java/lang/Long");
 	if (java_long_class == NULL)
 	{
@@ -228,6 +255,12 @@ int bindJavaBaseLinks(JNIEnv* env)
 	if (!java_new_long)
 	{
 		fprintf(stderr, "Could not find constructor method of java.lang.Long\n");
+		return 0;
+	}
+	java_long_value = (*env)->GetMethodID(env, java_long_class, "longValue", "()J");
+	if (!java_long_value)
+	{
+		fprintf(stderr, "Could not find value method of java.lang.Long\n");
 		return 0;
 	}
 	java_float_class = (*env)->FindClass(env, "java/lang/Float");
@@ -242,6 +275,12 @@ int bindJavaBaseLinks(JNIEnv* env)
 		fprintf(stderr, "Could not find constructor method of java.lang.Float\n");
 		return 0;
 	}
+	java_float_value = (*env)->GetMethodID(env, java_float_class, "floatValue", "()F");
+	if (!java_float_value)
+	{
+		fprintf(stderr, "Could not find value method of java.lang.Float\n");
+		return 0;
+	}
 	java_double_class = (*env)->FindClass(env, "java/lang/Double");
 	if (java_double_class == NULL)
 	{
@@ -254,6 +293,12 @@ int bindJavaBaseLinks(JNIEnv* env)
 		fprintf(stderr, "Could not find constructor method of java.lang.Double\n");
 		return 0;
 	}
+	java_double_value = (*env)->GetMethodID(env, java_double_class, "doubleValue", "()D");
+	if (!java_double_value)
+	{
+		fprintf(stderr, "Could not find value method of java.lang.Double\n");
+		return 0;
+	}
 	java_boolean_class = (*env)->FindClass(env, "java/lang/Boolean");
 	if (java_boolean_class == NULL)
 	{
@@ -264,6 +309,19 @@ int bindJavaBaseLinks(JNIEnv* env)
 	if (!java_new_boolean)
 	{
 		fprintf(stderr, "Could not find constructor method of java.lang.Boolean\n");
+		return 0;
+	}
+	java_boolean_value = (*env)->GetMethodID(env, java_boolean_class, "booleanValue", "()Z");
+	if (!java_boolean_value)
+	{
+		fprintf(stderr, "Could not find value method of java.lang.Boolean\n");
+		return 0;
+	}
+	java_boolean_class = (*env)->FindClass(env, "java/lang/Boolean");
+	java_string_class = (*env)->FindClass(env, "java/lang/String");
+	if (java_string_class == NULL)
+	{
+		fprintf(stderr, "Error. Coundn't bind java class java.lang.String\n");
 		return 0;
 	}
 
@@ -688,5 +746,102 @@ ljJavaObject_t* runObjectMethod(ljJavaObject_t* objectInterface, const char * me
 		returnObject->object = (*javaEnv)->NewGlobalRef(javaEnv, resultObj);
 		return returnObject;
 	}
+	return NULL;
+}
+
+int getObjectType(ljJavaObject_t* objectInterface) {
+	JNIEnv * javaEnv;
+	jobject object;
+	jclass objectClass;
+
+	javaEnv = (JNIEnv *)objectInterface->javaEnv;
+	(*javaEnv)->ExceptionClear(javaEnv);
+	object = (jobject)objectInterface->object;
+
+	objectClass = (*javaEnv)->GetObjectClass(javaEnv, object);
+	/* Handles exception */
+	jobject jstr = checkException(javaEnv);
+	if (jstr) {
+		const char * cStr;
+		cStr = (*javaEnv)->GetStringUTFChars(javaEnv, jstr, NULL);
+		fprintf(stderr, "Error. exception while getting method of object : %s\n", cStr);
+		(*javaEnv)->ReleaseStringUTFChars(javaEnv, jstr, cStr);
+		return JTYPE_NONE;
+	}
+	if ((*javaEnv)->IsAssignableFrom(javaEnv, objectClass, java_byte_class)) {
+		return JTYPE_BYTE;
+	}
+	if ((*javaEnv)->IsAssignableFrom(javaEnv, objectClass, java_short_class)) {
+		return JTYPE_SHORT;
+	}
+	if ((*javaEnv)->IsAssignableFrom(javaEnv, objectClass, java_int_class)) {
+		return JTYPE_INT;
+	}
+	if ((*javaEnv)->IsAssignableFrom(javaEnv, objectClass, java_long_class)) {
+		return JTYPE_LONG;
+	}
+	if ((*javaEnv)->IsAssignableFrom(javaEnv, objectClass, java_float_class)) {
+		return JTYPE_FLOAT;
+	}
+	if ((*javaEnv)->IsAssignableFrom(javaEnv, objectClass, java_double_class)) {
+		return JTYPE_DOUBLE;
+	}
+	if ((*javaEnv)->IsAssignableFrom(javaEnv, objectClass, java_boolean_class)) {
+		return JTYPE_BOOLEAN;
+	}
+	if ((*javaEnv)->IsAssignableFrom(javaEnv, objectClass, java_string_class)) {
+		return JTYPE_STRING;
+	}
+	return JTYPE_OBJECT;
+}
+
+int getObjectIntValue(ljJavaObject_t* objectInterface) {
+	JNIEnv * javaEnv = (JNIEnv *)objectInterface->javaEnv;
+	switch (getObjectType(objectInterface)) {
+	case JTYPE_BYTE:
+		return (*javaEnv)->CallIntMethod(javaEnv, objectInterface->object, java_byte_value);
+		break;
+	case JTYPE_SHORT:
+		return (*javaEnv)->CallIntMethod(javaEnv, objectInterface->object, java_short_value);
+		break;
+	case JTYPE_INT:
+		return (*javaEnv)->CallIntMethod(javaEnv, objectInterface->object, java_int_value);
+		break;
+	case JTYPE_BOOLEAN:
+		return (*javaEnv)->CallBooleanMethod(javaEnv, objectInterface->object, java_boolean_value);
+	}
+	fprintf(stderr, "Trying to access int value of a non int type\n");
+	return 0;
+}
+long getObjectLongValue(ljJavaObject_t* objectInterface) {
+	JNIEnv * javaEnv = (JNIEnv *)objectInterface->javaEnv;
+	if (getObjectType(objectInterface) == JTYPE_LONG) {
+		return (long) (*javaEnv)->CallLongMethod(javaEnv, objectInterface->object, java_long_value);
+	}
+	fprintf(stderr, "Trying to access int value of a non int type\n");
+	return 0;
+}
+float getObjectFloatValue(ljJavaObject_t* objectInterface) {
+	JNIEnv * javaEnv = (JNIEnv *)objectInterface->javaEnv;
+	if (getObjectType(objectInterface) == JTYPE_FLOAT) {
+		return (*javaEnv)->CallFloatMethod(javaEnv, objectInterface->object, java_float_value);
+	}
+	fprintf(stderr, "Trying to access float value of a non float type\n");
+	return 0;
+}
+double getObjectDoubleValue(ljJavaObject_t* objectInterface) {
+	JNIEnv * javaEnv = (JNIEnv *)objectInterface->javaEnv;
+	if (getObjectType(objectInterface) == JTYPE_DOUBLE) {
+		return (*javaEnv)->CallDoubleMethod(javaEnv, objectInterface->object, java_double_value);
+	}
+	fprintf(stderr, "Trying to access double value of a non double type\n");
+	return 0;
+}
+const char* getObjectStringValue(ljJavaObject_t* objectInterface) {
+	JNIEnv * javaEnv = (JNIEnv *)objectInterface->javaEnv;
+	if (getObjectType(objectInterface) == JTYPE_STRING) {
+		return (*javaEnv)->GetStringUTFChars(javaEnv, (jstring)objectInterface->object, NULL);
+	}
+	fprintf(stderr, "Trying to access string value of a non string type\n");
 	return NULL;
 }
