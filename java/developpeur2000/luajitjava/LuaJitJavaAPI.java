@@ -40,6 +40,49 @@ public final class LuaJitJavaAPI
   private LuaJitJavaAPI()
   {
   }
+  
+  /**
+   * Utility method to compare expected args of a function with provided ones
+   * 
+   * @param methodParams table of expected classes / types
+   * @param providedArgs array of Object parameters, can be modified to fit primitive types
+   * @return true if method can be called with provided args (eventually modified here)
+   */
+	private static boolean areCompatibleArgs(Class[] methodParams, Object[] providedArgs) {
+		Class argClass;
+		if (methodParams.length != providedArgs.length)
+			return false;
+		for (int j = 0; j < methodParams.length; j++) {
+			System.out.println("class method type vs args type");
+			System.out.println(methodParams[j].toString());
+			argClass = providedArgs[j].getClass();
+			System.out.println(argClass.toString());
+			if (!methodParams[j].isAssignableFrom(argClass)) {
+				//check primitive data types correspondance
+				if (methodParams[j] == byte.class && argClass == Byte.class) {
+					providedArgs[j] = ((Byte)providedArgs[j]).byteValue();
+				} else if (methodParams[j] == short.class && argClass == Short.class) {
+					providedArgs[j] = ((Short)providedArgs[j]).shortValue();
+				} else if (methodParams[j] == int.class && argClass == Integer.class) {
+					providedArgs[j] = ((Integer)providedArgs[j]).intValue();
+				} else if (methodParams[j] == long.class && argClass == Long.class) {
+					providedArgs[j] = ((Long)providedArgs[j]).longValue();
+				} else if (methodParams[j] == float.class && argClass == Float.class) {
+					providedArgs[j] = ((Float)providedArgs[j]).floatValue();
+				} else if (methodParams[j] == double.class && argClass == Double.class) {
+					providedArgs[j] = ((Double)providedArgs[j]).doubleValue();
+				} else if (methodParams[j] == boolean.class && argClass == Boolean.class) {
+					providedArgs[j] = ((Boolean)providedArgs[j]).booleanValue();
+				} else if (methodParams[j] == char.class && argClass == Byte.class) {
+					providedArgs[j] = ((Byte)providedArgs[j]).byteValue();
+				} else {
+					return false;
+				}
+			}
+		}
+		return true;
+	}
+
 
   /**
    * Create a new instance of a java Object of the type className
@@ -79,26 +122,10 @@ public final class LuaJitJavaAPI
 		Constructor constructor = null;
 		// gets method and arguments
 		for (int i = 0; i < constructors.length; i++) {
-			Class[] parameters = constructors[i].getParameterTypes();
-			if (parameters.length != args.length)
-				continue;
-			boolean okConstruc = true;
-
-			for (int j = 0; j < parameters.length; j++) {
-				System.out.println("constructor type vs args type");
-				System.out.println(parameters[j].toString());
-				System.out.println(args[j].getClass().toString());
-				if (!parameters[j].isAssignableFrom(args[j].getClass())) {
-					okConstruc = false;
-					break;
-				}
-			}
-
-			if (okConstruc) {
+			if (areCompatibleArgs(constructors[i].getParameterTypes(), args)) {
 				constructor = constructors[i];
 				break;
 			}
-
 		}
 
 		// If method is null means there isn't one receiving the given arguments
@@ -157,10 +184,6 @@ public final class LuaJitJavaAPI
 		return ret;
 	}
   
-  	/************************************
-  	 * 
-  	 * 
-  	 * **********************************/
   	 
   	 
   /**
@@ -211,7 +234,7 @@ public final class LuaJitJavaAPI
 
 		return ret;
 	}
-
+	
 	private static Method getMethod(Class clazz, String methodName, Object[] args) {
 		System.out.println("look for class method");
 		System.out.println(clazz.toString());
@@ -223,23 +246,7 @@ public final class LuaJitJavaAPI
 			if (!methods[i].getName().equals(methodName))
 				continue;
 
-			Class[] parameters = methods[i].getParameterTypes();
-			if (parameters.length != args.length)
-				continue;
-
-			boolean okMethod = true;
-
-			for (int j = 0; j < parameters.length; j++) {
-				System.out.println("class method type vs args type");
-				System.out.println(parameters[j].toString());
-				System.out.println(args[j].getClass().toString());
-				if (!parameters[j].isAssignableFrom(args[j].getClass())) {
-					okMethod = false;
-					break;
-				}
-			}
-
-			if (okMethod) {
+			if (areCompatibleArgs(methods[i].getParameterTypes(), args)) {
 				method = methods[i];
 				break;
 			}
