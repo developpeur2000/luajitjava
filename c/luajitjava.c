@@ -57,11 +57,13 @@ typedef struct ljJavaEnvironment {
 
 //set of useful java classes we bind with at init for convenience
 // including the luajitjava binding class
-static jclass    throwable_class = NULL;
-static jmethodID get_message_method = NULL;
-static jclass    java_function_class = NULL;
-static jmethodID java_function_method = NULL;
 static jclass    luajitjava_binding_class = NULL;
+static jmethodID luajitjava_run_method = NULL;
+static jmethodID luajitjava_java_new = NULL;
+static jmethodID luajitjava_check_field = NULL;
+static jclass    throwable_class = NULL;
+static jmethodID throwable_tostring = NULL;
+static jmethodID throwable_get_message = NULL;
 static jclass    java_lang_class = NULL;
 static jmethodID java_lang_class_forname = NULL;
 static jclass    java_lang_object = NULL;
@@ -106,16 +108,14 @@ jobject checkException(JNIEnv* javaEnv) {
 		jobject jstr;
 
 		(*javaEnv)->ExceptionClear(javaEnv);
-		jstr = (*javaEnv)->CallObjectMethod(javaEnv, exp, get_message_method);
+		jstr = (*javaEnv)->CallObjectMethod(javaEnv, exp, throwable_get_message);
 
 		if (jstr == NULL)
 		{
-			jmethodID methodId;
-
-			methodId = (*javaEnv)->GetMethodID(javaEnv, throwable_class, "toString", "()Ljava/lang/String;");
-			jstr = (*javaEnv)->CallObjectMethod(javaEnv, exp, methodId);
+			jstr = (*javaEnv)->CallObjectMethod(javaEnv, exp, throwable_tostring);
 		}
 
+		(*javaEnv)->DeleteLocalRef(javaEnv, exp);
 		return jstr;
 	}
 	return NULL;
@@ -141,194 +141,87 @@ JNIEnv* create_vm(JavaVM** jvm, const char* classPath) {
 //bind with all utility java objects
 int bindJavaBaseLinks(JNIEnv* env)
 {
-	jclass tempClass;
+	jclass tmpClass;
 
-	tempClass = (*env)->FindClass(env, "developpeur2000/luajitjava/LuaJitJavaAPI");
-	if (tempClass == NULL)
+	tmpClass = (*env)->FindClass(env, "developpeur2000/luajitjava/LuaJitJavaAPI");
+	if (tmpClass == NULL)
 	{
 		fprintf(stderr, "Could not find LuaJitJavaAPI class\n");
 		return 0;
 	}
-	if ((luajitjava_binding_class = (*env)->NewGlobalRef(env, tempClass)) == NULL)
-	{
-		fprintf(stderr, "Could not bind to LuaJitJavaAPI class\n");
-		return 0;
-	}
+	luajitjava_binding_class = (*env)->NewGlobalRef(env, tmpClass);
+	(*env)->DeleteLocalRef(env, tmpClass);
 
-	tempClass = (*env)->FindClass(env, "java/lang/Throwable");
-	if (tempClass == NULL)
-	{
-		fprintf(stderr, "Error. Couldn't bind java class java.lang.Throwable\n");
-		return 0;
-	}
-	throwable_class = (*env)->NewGlobalRef(env, tempClass);
-	if (throwable_class == NULL)
-	{
-		fprintf(stderr, "Error. Couldn't bind java class java.lang.Throwable\n");
-		return 0;
-	}
-	get_message_method = (*env)->GetMethodID(env, throwable_class, "getMessage",
+	luajitjava_run_method = (*env)->GetStaticMethodID(env, luajitjava_binding_class, "runMethod",
+		"(Ljava/lang/Object;Ljava/lang/String;[Ljava/lang/Object;)Ljava/lang/Object;");
+	luajitjava_java_new = (*env)->GetStaticMethodID(env, luajitjava_binding_class, "javaNew",
+		"(Ljava/lang/Class;[Ljava/lang/Object;)Ljava/lang/Object;");
+	luajitjava_check_field = (*env)->GetStaticMethodID(env, luajitjava_binding_class, "checkField",
+		"(Ljava/lang/Object;Ljava/lang/String;)Ljava/lang/Object;");
+
+
+	throwable_class = (*env)->FindClass(env, "java/lang/Throwable");
+	throwable_get_message = (*env)->GetMethodID(env, throwable_class, "getMessage",
 		"()Ljava/lang/String;");
-	if (get_message_method == NULL)
-	{
-		fprintf(stderr, "Could not find <getMessage> method in java.lang.String\n");
-		return 0;
-	}
+	throwable_tostring = (*env)->GetMethodID(env, throwable_class, "toString",
+		"()Ljava/lang/String;");
 
-	tempClass = (*env)->FindClass(env, "java/lang/Class");
-	java_lang_class = (*env)->NewGlobalRef(env, tempClass);
+	java_lang_class = (*env)->FindClass(env, "java/lang/Class");
 	java_lang_class_forname = (*env)->GetStaticMethodID(env, java_lang_class, "forName",
 		"(Ljava/lang/String;ZLjava/lang/ClassLoader;)Ljava/lang/Class;");
 
-
-	tempClass = (*env)->FindClass(env, "java/lang/Object");
-	if (tempClass == NULL)
-	{
-		fprintf(stderr, "Error. Coundn't bind java class java.lang.Object\n");
-		return 0;
-	}
-	java_lang_object = (*env)->NewGlobalRef(env, tempClass);
-	if (java_lang_object == NULL)
-	{
-		fprintf(stderr, "Error. Couldn't bind java class java.lang.Object\n");
-		return 0;
-	}
+	java_lang_object = (*env)->FindClass(env, "java/lang/Object");
 
 	java_byte_class = (*env)->FindClass(env, "java/lang/Byte");
-	if (java_byte_class == NULL)
-	{
-		fprintf(stderr, "Error. Coundn't bind java class java.lang.Byte\n");
-		return 0;
-	}
 	java_new_byte = (*env)->GetMethodID(env, java_byte_class, "<init>", "(B)V");
-	if (!java_new_byte)
-	{
-		fprintf(stderr, "Could not find constructor method of java.lang.Byte\n");
-		return 0;
-	}
 	java_byte_value = (*env)->GetMethodID(env, java_byte_class, "intValue", "()I");
-	if (!java_byte_value)
-	{
-		fprintf(stderr, "Could not find value method of java.lang.Byte\n");
-		return 0;
-	}
+
 	java_short_class = (*env)->FindClass(env, "java/lang/Short");
-	if (java_short_class == NULL)
-	{
-		fprintf(stderr, "Error. Coundn't bind java class java.lang.Short\n");
-		return 0;
-	}
 	java_new_short = (*env)->GetMethodID(env, java_short_class, "<init>", "(S)V");
-	if (!java_new_short)
-	{
-		fprintf(stderr, "Could not find constructor method of java.lang.Short\n");
-		return 0;
-	}
 	java_short_value = (*env)->GetMethodID(env, java_short_class, "intValue", "()I");
-	if (!java_short_value)
-	{
-		fprintf(stderr, "Could not find value method of java.lang.Short\n");
-		return 0;
-	}
+
 	java_int_class = (*env)->FindClass(env, "java/lang/Integer");
-	if (java_int_class == NULL)
-	{
-		fprintf(stderr, "Error. Coundn't bind java class java.lang.Integer\n");
-		return 0;
-	}
 	java_new_int = (*env)->GetMethodID(env, java_int_class, "<init>", "(I)V");
-	if (!java_new_int)
-	{
-		fprintf(stderr, "Could not find constructor method of java.lang.Integer\n");
-		return 0;
-	}
 	java_int_value = (*env)->GetMethodID(env, java_int_class, "intValue", "()I");
-	if (!java_int_value)
-	{
-		fprintf(stderr, "Could not find value method of java.lang.Integer\n");
-		return 0;
-	}
+
 	java_long_class = (*env)->FindClass(env, "java/lang/Long");
-	if (java_long_class == NULL)
-	{
-		fprintf(stderr, "Error. Coundn't bind java class java.lang.Long\n");
-		return 0;
-	}
 	java_new_long = (*env)->GetMethodID(env, java_long_class, "<init>", "(J)V");
-	if (!java_new_long)
-	{
-		fprintf(stderr, "Could not find constructor method of java.lang.Long\n");
-		return 0;
-	}
 	java_long_value = (*env)->GetMethodID(env, java_long_class, "longValue", "()J");
-	if (!java_long_value)
-	{
-		fprintf(stderr, "Could not find value method of java.lang.Long\n");
-		return 0;
-	}
+
 	java_float_class = (*env)->FindClass(env, "java/lang/Float");
-	if (java_float_class == NULL)
-	{
-		fprintf(stderr, "Error. Coundn't bind java class java.lang.Float\n");
-		return 0;
-	}
 	java_new_float = (*env)->GetMethodID(env, java_float_class, "<init>", "(F)V");
-	if (!java_new_float)
-	{
-		fprintf(stderr, "Could not find constructor method of java.lang.Float\n");
-		return 0;
-	}
 	java_float_value = (*env)->GetMethodID(env, java_float_class, "floatValue", "()F");
-	if (!java_float_value)
-	{
-		fprintf(stderr, "Could not find value method of java.lang.Float\n");
-		return 0;
-	}
+
 	java_double_class = (*env)->FindClass(env, "java/lang/Double");
-	if (java_double_class == NULL)
-	{
-		fprintf(stderr, "Error. Coundn't bind java class java.lang.Double\n");
-		return 0;
-	}
 	java_new_double = (*env)->GetMethodID(env, java_double_class, "<init>", "(D)V");
-	if (!java_new_double)
-	{
-		fprintf(stderr, "Could not find constructor method of java.lang.Double\n");
-		return 0;
-	}
 	java_double_value = (*env)->GetMethodID(env, java_double_class, "doubleValue", "()D");
-	if (!java_double_value)
-	{
-		fprintf(stderr, "Could not find value method of java.lang.Double\n");
-		return 0;
-	}
+
 	java_boolean_class = (*env)->FindClass(env, "java/lang/Boolean");
-	if (java_boolean_class == NULL)
-	{
-		fprintf(stderr, "Error. Coundn't bind java class java.lang.Boolean\n");
-		return 0;
-	}
 	java_new_boolean = (*env)->GetMethodID(env, java_boolean_class, "<init>", "(Z)V");
-	if (!java_new_boolean)
-	{
-		fprintf(stderr, "Could not find constructor method of java.lang.Boolean\n");
-		return 0;
-	}
 	java_boolean_value = (*env)->GetMethodID(env, java_boolean_class, "booleanValue", "()Z");
-	if (!java_boolean_value)
-	{
-		fprintf(stderr, "Could not find value method of java.lang.Boolean\n");
-		return 0;
-	}
-	java_boolean_class = (*env)->FindClass(env, "java/lang/Boolean");
+
 	java_string_class = (*env)->FindClass(env, "java/lang/String");
-	if (java_string_class == NULL)
-	{
-		fprintf(stderr, "Error. Coundn't bind java class java.lang.String\n");
-		return 0;
-	}
 
 	return 1;
+}
+
+//release the utility java bindings
+void unbindJavaBaseLinks(JNIEnv* env)
+{
+	(*env)->DeleteLocalRef(env, luajitjava_binding_class);
+	(*env)->DeleteLocalRef(env, throwable_class);
+	(*env)->DeleteLocalRef(env, java_lang_class);
+
+	(*env)->DeleteLocalRef(env, java_lang_object);
+
+	(*env)->DeleteLocalRef(env, java_byte_class);
+	(*env)->DeleteLocalRef(env, java_short_class);
+	(*env)->DeleteLocalRef(env, java_int_class);
+	(*env)->DeleteLocalRef(env, java_long_class);
+	(*env)->DeleteLocalRef(env, java_float_class);
+	(*env)->DeleteLocalRef(env, java_double_class);
+	(*env)->DeleteLocalRef(env, java_boolean_class);
+	(*env)->DeleteLocalRef(env, java_string_class);
 }
 
 // init the bindings and get the java environment
@@ -348,35 +241,15 @@ void* internal_javaStart(const char* classPath)
 
 	//store class loader
 	jclass threadClass = (*env)->FindClass(env, "java/lang/Thread");
-	if (!threadClass) {
-		fprintf(stderr, "Could not find Thread class\n");
-		return NULL;
-	}
 	jmethodID currentThreadMethod = (*env)->GetStaticMethodID(env, threadClass, "currentThread",
 		"()Ljava/lang/Thread;");
-	if (!threadClass) {
-		fprintf(stderr, "Could not find Thread currentThread method\n");
-		return NULL;
-	}
 	jobject currentThread = (*env)->CallStaticObjectMethod(env, threadClass, currentThreadMethod);
-	if (!threadClass) {
-		fprintf(stderr, "Could not get current Thread object\n");
-		return NULL;
-	}
 	jmethodID getContextClassLoaderMethod = (*env)->GetMethodID(env, threadClass, "getContextClassLoader",
 		"()Ljava/lang/ClassLoader;");
-	if (!threadClass) {
-		fprintf(stderr, "Could not find getContextLoader method\n");
-		return NULL;
-	}
-	jobject javaContextClassLoader = (*env)->CallObjectMethod(env, currentThread, getContextClassLoaderMethod);
-	if (javaContextClassLoader == NULL)
-	{
-		fprintf(stderr, "Could not get classLoader\n");
-		return NULL;
-	}
-	java_class_loader = (*env)->NewGlobalRef(env, javaContextClassLoader);
-
+	java_class_loader = (*env)->CallObjectMethod(env, currentThread, getContextClassLoaderMethod);
+	//cleanup
+	(*env)->DeleteLocalRef(env, threadClass);
+	(*env)->DeleteLocalRef(env, currentThread);
 
 	if (bindJavaBaseLinks(env) == 0) {
 		fprintf(stderr, "\n Unable to bind with java\n");
@@ -400,6 +273,8 @@ void internal_javaEnd(void* ljEnv)
 
 	(*javaEnv)->DeleteGlobalRef(javaEnv, java_class_loader);
 
+	unbindJavaBaseLinks(javaEnv);
+
 	(*jvm)->DestroyJavaVM(jvm);
 
 	fprintf(stdout, "destroyed jvm\n");
@@ -422,7 +297,6 @@ int internal_javaBindClass(ljJavaClass_t* classInterface, const char* className)
 		java_lang_class_forname, javaClassName, JNI_TRUE, java_class_loader);
 
 	(*javaEnv)->DeleteLocalRef(javaEnv, javaClassName);
-	//(*javaEnv)->DeleteLocalRef(javaEnv, method);
 
 	jobject jstr = checkException(javaEnv);
 	if (jstr) {
@@ -547,8 +421,6 @@ void releasejavaArgs(JNIEnv * javaEnv, jobjectArray javaArgArray) {
 int internal_javaNew(ljJavaObject_t* objectInterface, ljJavaClass_t* classInterface, int nArgs, va_list valist)
 {
 	jobject newObject;
-	jclass clazz;
-	jmethodID method;
 	jobject classInstance;
 	JNIEnv * javaEnv;
 
@@ -559,37 +431,15 @@ int internal_javaNew(ljJavaObject_t* objectInterface, ljJavaClass_t* classInterf
 	jobjectArray javaArgArray = getjavaArgs(javaEnv, nArgs, valist);
 
 	//check given class interface
-	clazz = (*javaEnv)->FindClass(javaEnv, "java/lang/Class");
-	if (clazz == NULL)
-	{
-		fprintf(stderr, "Could not find class java.lang.Class\n");
-		return 0;
-	}
 	classInstance = (jobject) classInterface->classObject;
-	if (classInstance == NULL)
-	{
-		fprintf(stderr, "given class instance is null !\n");
-		return 0;
-	}
-	if ((*javaEnv)->IsInstanceOf(javaEnv, classInstance, clazz) == JNI_FALSE)
+	if ((*javaEnv)->IsInstanceOf(javaEnv, classInstance, java_lang_class) == JNI_FALSE)
 	{
 		fprintf(stderr, "Class interface does not seem to contain a class instance\n");
 		return 0;
 	}
-	(*javaEnv)->DeleteLocalRef(javaEnv, clazz);
 
 	//create new object through our binding java class
-	method = (*javaEnv)->GetStaticMethodID(javaEnv, luajitjava_binding_class, "javaNew",
-		"(Ljava/lang/Class;[Ljava/lang/Object;)Ljava/lang/Object;");
-	if (method == NULL)
-	{
-		fprintf(stderr, "Could not find binding method LuaJitJavaAPI.javaNew\n");
-		return 0;
-	}
-
-	newObject = (*javaEnv)->CallStaticObjectMethod(javaEnv, luajitjava_binding_class, method, classInstance, javaArgArray);
-	(*javaEnv)->DeleteLocalRef(javaEnv, classInstance);
-//	(*javaEnv)->DeleteLocalRef(javaEnv, method);
+	newObject = (*javaEnv)->CallStaticObjectMethod(javaEnv, luajitjava_binding_class, luajitjava_java_new, classInstance, javaArgArray);
 	releasejavaArgs(javaEnv, javaArgArray);
 
 	/* Handles exception */
@@ -623,7 +473,6 @@ void internal_javaReleaseObject(ljJavaObject_t* objectInterface) {
 ljJavaObject_t* internal_javaCheckClassField(ljJavaClass_t* classInterface, const char * key)
 {
 	JNIEnv * javaEnv;
-	jmethodID method;
 	jclass containerClass;
 	jstring str;
 	jobject eventualField;
@@ -633,12 +482,9 @@ ljJavaObject_t* internal_javaCheckClassField(ljJavaClass_t* classInterface, cons
 	(*javaEnv)->ExceptionClear(javaEnv);
 	containerClass = (jobject)classInterface->classObject;
 
-	method = (*javaEnv)->GetStaticMethodID(javaEnv, luajitjava_binding_class, "checkField",
-		"(Ljava/lang/Object;Ljava/lang/String;)Ljava/lang/Object;");
 	str = (*javaEnv)->NewStringUTF(javaEnv, key);
-	eventualField = (*javaEnv)->CallStaticObjectMethod(javaEnv, luajitjava_binding_class, method, containerClass, str);
+	eventualField = (*javaEnv)->CallStaticObjectMethod(javaEnv, luajitjava_binding_class, luajitjava_check_field, containerClass, str);
 	(*javaEnv)->DeleteLocalRef(javaEnv, str);
-//	(*javaEnv)->DeleteLocalRef(javaEnv, method);
 	/* Handles exception */
 	jobject jstr = checkException(javaEnv);
 	if (jstr) {
@@ -666,7 +512,6 @@ ljJavaObject_t* internal_javaRunClassMethod(ljJavaClass_t* classInterface, const
 {
 	JNIEnv * javaEnv;
 	jclass containerClass;
-	jmethodID method;
 	jstring str;
 	jobject resultObj;
 	ljJavaObject_t* returnObject;
@@ -681,17 +526,9 @@ ljJavaObject_t* internal_javaRunClassMethod(ljJavaClass_t* classInterface, const
 	jobjectArray javaArgArray = getjavaArgs(javaEnv, nArgs, valist);
 
 	/* Run method through our java proxy */
-	method = (*javaEnv)->GetStaticMethodID(javaEnv, luajitjava_binding_class, "runMethod",
-		"(Ljava/lang/Object;Ljava/lang/String;[Ljava/lang/Object;)Ljava/lang/Object;");
-	if (method == NULL)
-	{
-		fprintf(stderr, "Could not find binding method LuaJavaAPI.runMethod\n");
-		return NULL;
-	}
 	str = (*javaEnv)->NewStringUTF(javaEnv, methodName);
-	resultObj = (*javaEnv)->CallStaticObjectMethod(javaEnv, luajitjava_binding_class, method, containerClass, str, javaArgArray);
+	resultObj = (*javaEnv)->CallStaticObjectMethod(javaEnv, luajitjava_binding_class, luajitjava_run_method, containerClass, str, javaArgArray);
 	(*javaEnv)->DeleteLocalRef(javaEnv, str);
-//	(*javaEnv)->DeleteLocalRef(javaEnv, method);
 	releasejavaArgs(javaEnv, javaArgArray);
 
 	/* Handles exception */
@@ -720,7 +557,6 @@ ljJavaObject_t* internal_javaRunClassMethod(ljJavaClass_t* classInterface, const
 ljJavaObject_t* internal_javaCheckObjectField(ljJavaObject_t* objectInterface, const char * key)
 {
 	JNIEnv * javaEnv;
-	jmethodID method;
 	jobject containerObj;
 	jstring str;
 	jobject eventualField;
@@ -730,12 +566,9 @@ ljJavaObject_t* internal_javaCheckObjectField(ljJavaObject_t* objectInterface, c
 	(*javaEnv)->ExceptionClear(javaEnv);
 	containerObj = (jobject)objectInterface->object;
 
-	method = (*javaEnv)->GetStaticMethodID(javaEnv, luajitjava_binding_class, "checkField",
-		"(Ljava/lang/Object;Ljava/lang/String;)Ljava/lang/Object;");
 	str = (*javaEnv)->NewStringUTF(javaEnv, key);
-	eventualField = (*javaEnv)->CallStaticObjectMethod(javaEnv, luajitjava_binding_class, method, containerObj, str);
+	eventualField = (*javaEnv)->CallStaticObjectMethod(javaEnv, luajitjava_binding_class, luajitjava_check_field, containerObj, str);
 	(*javaEnv)->DeleteLocalRef(javaEnv, str);
-//	(*javaEnv)->DeleteLocalRef(javaEnv, method);
 	/* Handles exception */
 	jobject jstr = checkException(javaEnv);
 	if (jstr) {
@@ -763,7 +596,6 @@ ljJavaObject_t* internal_javaRunObjectMethod(ljJavaObject_t* objectInterface, co
 {
 	JNIEnv * javaEnv;
 	jobject containerObj;
-	jmethodID method;
 	jstring str;
 	jobject resultObj;
 	ljJavaObject_t* returnObject;
@@ -776,17 +608,9 @@ ljJavaObject_t* internal_javaRunObjectMethod(ljJavaObject_t* objectInterface, co
 	jobjectArray javaArgArray = getjavaArgs(javaEnv, nArgs, valist);
 
 	/* Run method through our java proxy */
-	method = (*javaEnv)->GetStaticMethodID(javaEnv, luajitjava_binding_class, "runMethod",
-		"(Ljava/lang/Object;Ljava/lang/String;[Ljava/lang/Object;)Ljava/lang/Object;");
-	if (method == NULL)
-	{
-		fprintf(stderr, "Could not find binding method LuaJavaAPI.runMethod\n");
-		return NULL;
-	}
 	str = (*javaEnv)->NewStringUTF(javaEnv, methodName);
-	resultObj = (*javaEnv)->CallStaticObjectMethod(javaEnv, luajitjava_binding_class, method, containerObj, str, javaArgArray);
+	resultObj = (*javaEnv)->CallStaticObjectMethod(javaEnv, luajitjava_binding_class, luajitjava_run_method, containerObj, str, javaArgArray);
 	(*javaEnv)->DeleteLocalRef(javaEnv, str);
-//	(*javaEnv)->DeleteLocalRef(javaEnv, method);
 	releasejavaArgs(javaEnv, javaArgArray);
 
 	/* Handles exception */
