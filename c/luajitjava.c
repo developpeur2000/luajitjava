@@ -43,8 +43,17 @@
 #include <stdarg.h>
 
 #include <jni.h>
+#include <windows.h>
 
 #include "luajitjava.h"
+
+//opaque struct returned after started environment
+typedef struct ljJavaEnvironment {
+	JNIEnv* javaEnv;
+	JavaVM* jvm;
+} ljJavaEnvironment_t;
+
+
 
 //set of useful java classes we bind with at init for convenience
 // including the luajitjava binding class
@@ -54,6 +63,7 @@ static jclass    java_function_class = NULL;
 static jmethodID java_function_method = NULL;
 static jclass    luajitjava_binding_class = NULL;
 static jclass    java_lang_class = NULL;
+static jmethodID java_lang_class_forname = NULL;
 static jclass    java_lang_object = NULL;
 
 //keep track of the java class loader at init in jni context
@@ -166,17 +176,10 @@ int bindJavaBaseLinks(JNIEnv* env)
 	}
 
 	tempClass = (*env)->FindClass(env, "java/lang/Class");
-	if (tempClass == NULL)
-	{
-		fprintf(stderr, "Error. Coundn't bind java class java.lang.Class\n");
-		return 0;
-	}
 	java_lang_class = (*env)->NewGlobalRef(env, tempClass);
-	if (java_lang_class == NULL)
-	{
-		fprintf(stderr, "Error. Couldn't bind java class java.lang.Class\n");
-		return 0;
-	}
+	java_lang_class_forname = (*env)->GetStaticMethodID(env, java_lang_class, "forName",
+		"(Ljava/lang/String;ZLjava/lang/ClassLoader;)Ljava/lang/Class;");
+
 
 	tempClass = (*env)->FindClass(env, "java/lang/Object");
 	if (tempClass == NULL)
@@ -328,11 +331,12 @@ int bindJavaBaseLinks(JNIEnv* env)
 	return 1;
 }
 
-// lua called method to init the bindings and get the java environment
-void* javaStart(const char* classPath)
+// init the bindings and get the java environment
+void* internal_javaStart(const char* classPath)
 {
 	JNIEnv *env;
 	JavaVM *jvm;
+	ljJavaEnvironment_t* returnStruct;
 	jclass tempClass = NULL;
 
 	env = create_vm(&jvm, classPath);
@@ -379,32 +383,46 @@ void* javaStart(const char* classPath)
 		return NULL;
 	}
 
-	return (void*) env;
+	returnStruct = malloc(sizeof(ljJavaEnvironment_t));
+	returnStruct->javaEnv = env;
+	returnStruct->jvm = jvm;
+	return (void*)returnStruct;
 }
 
-// lua called method to get a java class handle
-int javaBindClass(ljJavaClass_t* classInterface, const char* className)
+// release the bindings and destroy the JVM
+void internal_javaEnd(void* ljEnv)
 {
-	jmethodID method;
+	ljJavaEnvironment_t* infoStruct = (ljJavaEnvironment_t*)ljEnv;
+	JNIEnv * javaEnv = (JNIEnv *) infoStruct->javaEnv;
+	JavaVM * jvm = (JavaVM *) infoStruct->jvm;
+
+	free(infoStruct);
+
+	(*javaEnv)->DeleteGlobalRef(javaEnv, java_class_loader);
+
+	(*jvm)->DestroyJavaVM(jvm);
+
+	fprintf(stdout, "destroyed jvm\n");
+}
+
+// get a java class handle
+int internal_javaBindClass(ljJavaClass_t* classInterface, const char* className)
+{
 	jstring javaClassName;
 	jobject classInstance;
 	JNIEnv * javaEnv;
 
-	javaEnv = classInterface->javaEnv;
+	javaEnv = ((ljJavaEnvironment_t*)classInterface->ljEnv)->javaEnv;
 	(*javaEnv)->ExceptionClear(javaEnv);
 
-	method = (*javaEnv)->GetStaticMethodID(javaEnv, java_lang_class, "forName",
-		"(Ljava/lang/String;ZLjava/lang/ClassLoader;)Ljava/lang/Class;");
-	if (method == NULL) {
-		fprintf(stderr, "Unable to find the Class.forName method\n");
-	}
 
 	javaClassName = (*javaEnv)->NewStringUTF(javaEnv, className);
 
 	classInstance = (*javaEnv)->CallStaticObjectMethod(javaEnv, java_lang_class,
-		method, javaClassName, JNI_TRUE, java_class_loader);
+		java_lang_class_forname, javaClassName, JNI_TRUE, java_class_loader);
 
 	(*javaEnv)->DeleteLocalRef(javaEnv, javaClassName);
+	//(*javaEnv)->DeleteLocalRef(javaEnv, method);
 
 	jobject jstr = checkException(javaEnv);
 	if (jstr) {
@@ -412,6 +430,7 @@ int javaBindClass(ljJavaClass_t* classInterface, const char* className)
 		cStr = (*javaEnv)->GetStringUTFChars(javaEnv, jstr, NULL);
 		fprintf(stderr, "Error. Couldn't bind java class %s : %s\n", className, cStr);
 		(*javaEnv)->ReleaseStringUTFChars(javaEnv, jstr, cStr);
+		(*javaEnv)->DeleteLocalRef(javaEnv, jstr);
 		return 0;
 	}
 
@@ -420,8 +439,15 @@ int javaBindClass(ljJavaClass_t* classInterface, const char* className)
 	}
 
 	classInterface->classObject = (*javaEnv)->NewGlobalRef(javaEnv, classInstance);
+	(*javaEnv)->DeleteLocalRef(javaEnv, classInstance);
 
 	return 1;
+}
+
+// release a java class handle
+void internal_javaReleaseClass(ljJavaClass_t* classInterface) {
+	JNIEnv * javaEnv = ((ljJavaEnvironment_t*)classInterface->ljEnv)->javaEnv;
+	(*javaEnv)->DeleteGlobalRef(javaEnv, classInterface->classObject);
 }
 
 // utility function to transform vararg list into an array of java objects
@@ -505,9 +531,20 @@ jobjectArray getjavaArgs(JNIEnv * javaEnv, int nArgs, va_list valist) {
 	return javaArgArray;
 }
 
+// utility function to release the array of java arguments created in the previous method
+void releasejavaArgs(JNIEnv * javaEnv, jobjectArray javaArgArray) {
+	jobject curJObject;
+
+	for (int i = 0; i < (*javaEnv)->GetArrayLength(javaEnv, javaArgArray); i++) {
+		curJObject = (*javaEnv)->GetObjectArrayElement(javaEnv, javaArgArray, i);
+		(*javaEnv)->DeleteLocalRef(javaEnv, curJObject);
+	}
+	(*javaEnv)->DeleteLocalRef(javaEnv, javaArgArray);
+}
+
 // lua called method to instantiate an object from a specified class,
 //  using provided constructor arguments
-int javaNew(ljJavaObject_t* objectInterface, ljJavaClass_t* classInterface, int nArgs, ...)
+int internal_javaNew(ljJavaObject_t* objectInterface, ljJavaClass_t* classInterface, int nArgs, va_list valist)
 {
 	jobject newObject;
 	jclass clazz;
@@ -515,12 +552,10 @@ int javaNew(ljJavaObject_t* objectInterface, ljJavaClass_t* classInterface, int 
 	jobject classInstance;
 	JNIEnv * javaEnv;
 
-	javaEnv = classInterface->javaEnv;
+	javaEnv = ((ljJavaEnvironment_t*)classInterface->ljEnv)->javaEnv;
 	(*javaEnv)->ExceptionClear(javaEnv);
 
 	//get java params from args
-	va_list valist;
-	va_start(valist, nArgs);
 	jobjectArray javaArgArray = getjavaArgs(javaEnv, nArgs, valist);
 
 	//check given class interface
@@ -541,6 +576,7 @@ int javaNew(ljJavaObject_t* objectInterface, ljJavaClass_t* classInterface, int 
 		fprintf(stderr, "Class interface does not seem to contain a class instance\n");
 		return 0;
 	}
+	(*javaEnv)->DeleteLocalRef(javaEnv, clazz);
 
 	//create new object through our binding java class
 	method = (*javaEnv)->GetStaticMethodID(javaEnv, luajitjava_binding_class, "javaNew",
@@ -552,6 +588,9 @@ int javaNew(ljJavaObject_t* objectInterface, ljJavaClass_t* classInterface, int 
 	}
 
 	newObject = (*javaEnv)->CallStaticObjectMethod(javaEnv, luajitjava_binding_class, method, classInstance, javaArgArray);
+	(*javaEnv)->DeleteLocalRef(javaEnv, classInstance);
+//	(*javaEnv)->DeleteLocalRef(javaEnv, method);
+	releasejavaArgs(javaEnv, javaArgArray);
 
 	/* Handles exception */
 	jobject jstr = checkException(javaEnv);
@@ -560,6 +599,7 @@ int javaNew(ljJavaObject_t* objectInterface, ljJavaClass_t* classInterface, int 
 		cStr = (*javaEnv)->GetStringUTFChars(javaEnv, jstr, NULL);
 		fprintf(stderr, "Error. Couldn't create object : %s\n", cStr);
 		(*javaEnv)->ReleaseStringUTFChars(javaEnv, jstr, cStr);
+		(*javaEnv)->DeleteLocalRef(javaEnv, jstr);
 		return 0;
 	}
 
@@ -569,11 +609,18 @@ int javaNew(ljJavaObject_t* objectInterface, ljJavaClass_t* classInterface, int 
 	}
 
 	objectInterface->object = (*javaEnv)->NewGlobalRef(javaEnv, newObject);
+	(*javaEnv)->DeleteLocalRef(javaEnv, newObject);
 	return 1;
 }
 
-// lua called method to look for a static field in a class
-ljJavaObject_t* checkClassField(ljJavaClass_t* classInterface, const char * key)
+// lua called method to release a java object handle
+void internal_javaReleaseObject(ljJavaObject_t* objectInterface) {
+	JNIEnv * javaEnv = ((ljJavaEnvironment_t*)objectInterface->ljEnv)->javaEnv;
+	(*javaEnv)->DeleteGlobalRef(javaEnv, objectInterface->object);
+}
+
+// method to look for a static field in a class
+ljJavaObject_t* internal_javaCheckClassField(ljJavaClass_t* classInterface, const char * key)
 {
 	JNIEnv * javaEnv;
 	jmethodID method;
@@ -582,7 +629,7 @@ ljJavaObject_t* checkClassField(ljJavaClass_t* classInterface, const char * key)
 	jobject eventualField;
 	ljJavaObject_t* returnObject;
 
-	javaEnv = (JNIEnv *)classInterface->javaEnv;
+	javaEnv = ((ljJavaEnvironment_t*)classInterface->ljEnv)->javaEnv;
 	(*javaEnv)->ExceptionClear(javaEnv);
 	containerClass = (jobject)classInterface->classObject;
 
@@ -591,6 +638,7 @@ ljJavaObject_t* checkClassField(ljJavaClass_t* classInterface, const char * key)
 	str = (*javaEnv)->NewStringUTF(javaEnv, key);
 	eventualField = (*javaEnv)->CallStaticObjectMethod(javaEnv, luajitjava_binding_class, method, containerClass, str);
 	(*javaEnv)->DeleteLocalRef(javaEnv, str);
+//	(*javaEnv)->DeleteLocalRef(javaEnv, method);
 	/* Handles exception */
 	jobject jstr = checkException(javaEnv);
 	if (jstr) {
@@ -598,13 +646,15 @@ ljJavaObject_t* checkClassField(ljJavaClass_t* classInterface, const char * key)
 		cStr = (*javaEnv)->GetStringUTFChars(javaEnv, jstr, NULL);
 		fprintf(stderr, "Error. excpetion while getting index of object : %s\n", cStr);
 		(*javaEnv)->ReleaseStringUTFChars(javaEnv, jstr, cStr);
+		(*javaEnv)->DeleteLocalRef(javaEnv, jstr);
 		return 0;
 	}
 
 	if (eventualField != NULL) {
 		returnObject = malloc(sizeof(ljJavaObject_t));
-		returnObject->javaEnv = (void*)javaEnv;
+		returnObject->ljEnv = classInterface->ljEnv;
 		returnObject->object = (*javaEnv)->NewGlobalRef(javaEnv, eventualField);
+		(*javaEnv)->DeleteLocalRef(javaEnv, eventualField);
 		return returnObject;
 	}
 	return NULL;
@@ -612,7 +662,7 @@ ljJavaObject_t* checkClassField(ljJavaClass_t* classInterface, const char * key)
 
 // lua called method to look for a static method in a class corresponding to provided args
 //  then run it and return the object result
-ljJavaObject_t* runClassMethod(ljJavaClass_t* classInterface, const char * methodName, int nArgs, ...)
+ljJavaObject_t* internal_javaRunClassMethod(ljJavaClass_t* classInterface, const char * methodName, int nArgs, ...)
 {
 	JNIEnv * javaEnv;
 	jclass containerClass;
@@ -621,7 +671,7 @@ ljJavaObject_t* runClassMethod(ljJavaClass_t* classInterface, const char * metho
 	jobject resultObj;
 	ljJavaObject_t* returnObject;
 
-	javaEnv = (JNIEnv *)classInterface->javaEnv;
+	javaEnv = ((ljJavaEnvironment_t*)classInterface->ljEnv)->javaEnv;
 	(*javaEnv)->ExceptionClear(javaEnv);
 	containerClass = (jobject)classInterface->classObject;
 
@@ -640,6 +690,9 @@ ljJavaObject_t* runClassMethod(ljJavaClass_t* classInterface, const char * metho
 	}
 	str = (*javaEnv)->NewStringUTF(javaEnv, methodName);
 	resultObj = (*javaEnv)->CallStaticObjectMethod(javaEnv, luajitjava_binding_class, method, containerClass, str, javaArgArray);
+	(*javaEnv)->DeleteLocalRef(javaEnv, str);
+//	(*javaEnv)->DeleteLocalRef(javaEnv, method);
+	releasejavaArgs(javaEnv, javaArgArray);
 
 	/* Handles exception */
 	jobject jstr = checkException(javaEnv);
@@ -648,13 +701,15 @@ ljJavaObject_t* runClassMethod(ljJavaClass_t* classInterface, const char * metho
 		cStr = (*javaEnv)->GetStringUTFChars(javaEnv, jstr, NULL);
 		fprintf(stderr, "Error. exception while getting method of object : %s\n", cStr);
 		(*javaEnv)->ReleaseStringUTFChars(javaEnv, jstr, cStr);
+		(*javaEnv)->DeleteLocalRef(javaEnv, jstr);
 		return NULL;
 	}
 
 	if (resultObj != NULL) {
 		returnObject = malloc(sizeof(ljJavaObject_t));
-		returnObject->javaEnv = (void*)javaEnv;
+		returnObject->ljEnv = classInterface->ljEnv;
 		returnObject->object = (*javaEnv)->NewGlobalRef(javaEnv, resultObj);
+		(*javaEnv)->DeleteLocalRef(javaEnv, resultObj);
 		return returnObject;
 	}
 	return NULL;
@@ -662,7 +717,7 @@ ljJavaObject_t* runClassMethod(ljJavaClass_t* classInterface, const char * metho
 
 
 // lua called method to look for a field in an object instance
-ljJavaObject_t* checkObjectField(ljJavaObject_t* objectInterface, const char * key)
+ljJavaObject_t* internal_javaCheckObjectField(ljJavaObject_t* objectInterface, const char * key)
 {
 	JNIEnv * javaEnv;
 	jmethodID method;
@@ -671,7 +726,7 @@ ljJavaObject_t* checkObjectField(ljJavaObject_t* objectInterface, const char * k
 	jobject eventualField;
 	ljJavaObject_t* returnObject;
 
-	javaEnv = (JNIEnv *)objectInterface->javaEnv;
+	javaEnv = ((ljJavaEnvironment_t*)objectInterface->ljEnv)->javaEnv;
 	(*javaEnv)->ExceptionClear(javaEnv);
 	containerObj = (jobject)objectInterface->object;
 
@@ -680,6 +735,7 @@ ljJavaObject_t* checkObjectField(ljJavaObject_t* objectInterface, const char * k
 	str = (*javaEnv)->NewStringUTF(javaEnv, key);
 	eventualField = (*javaEnv)->CallStaticObjectMethod(javaEnv, luajitjava_binding_class, method, containerObj, str);
 	(*javaEnv)->DeleteLocalRef(javaEnv, str);
+//	(*javaEnv)->DeleteLocalRef(javaEnv, method);
 	/* Handles exception */
 	jobject jstr = checkException(javaEnv);
 	if (jstr) {
@@ -687,13 +743,15 @@ ljJavaObject_t* checkObjectField(ljJavaObject_t* objectInterface, const char * k
 		cStr = (*javaEnv)->GetStringUTFChars(javaEnv, jstr, NULL);
 		fprintf(stderr, "Error. excpetion while getting index of object : %s\n", cStr);
 		(*javaEnv)->ReleaseStringUTFChars(javaEnv, jstr, cStr);
+		(*javaEnv)->DeleteLocalRef(javaEnv, jstr);
 		return 0;
 	}
 
 	if (eventualField != NULL) {
 		returnObject = malloc(sizeof(ljJavaObject_t));
-		returnObject->javaEnv = (void*) javaEnv;
+		returnObject->ljEnv = objectInterface->ljEnv;
 		returnObject->object = (*javaEnv)->NewGlobalRef(javaEnv, eventualField);
+		(*javaEnv)->DeleteLocalRef(javaEnv, eventualField);
 		return returnObject;
 	}
 	return NULL;
@@ -701,7 +759,7 @@ ljJavaObject_t* checkObjectField(ljJavaObject_t* objectInterface, const char * k
 
 // lua called method to look for a method in an object instance corresponding to provided args
 //  then run it and return the object result
-ljJavaObject_t* runObjectMethod(ljJavaObject_t* objectInterface, const char * methodName, int nArgs, ...)
+ljJavaObject_t* internal_javaRunObjectMethod(ljJavaObject_t* objectInterface, const char * methodName, int nArgs, va_list valist)
 {
 	JNIEnv * javaEnv;
 	jobject containerObj;
@@ -710,13 +768,11 @@ ljJavaObject_t* runObjectMethod(ljJavaObject_t* objectInterface, const char * me
 	jobject resultObj;
 	ljJavaObject_t* returnObject;
 
-	javaEnv = (JNIEnv *)objectInterface->javaEnv;
+	javaEnv = ((ljJavaEnvironment_t*)objectInterface->ljEnv)->javaEnv;
 	(*javaEnv)->ExceptionClear(javaEnv);
 	containerObj = (jobject)objectInterface->object;
 
 	//get java params from args
-	va_list valist;
-	va_start(valist, nArgs);
 	jobjectArray javaArgArray = getjavaArgs(javaEnv, nArgs, valist);
 
 	/* Run method through our java proxy */
@@ -729,6 +785,9 @@ ljJavaObject_t* runObjectMethod(ljJavaObject_t* objectInterface, const char * me
 	}
 	str = (*javaEnv)->NewStringUTF(javaEnv, methodName);
 	resultObj = (*javaEnv)->CallStaticObjectMethod(javaEnv, luajitjava_binding_class, method, containerObj, str, javaArgArray);
+	(*javaEnv)->DeleteLocalRef(javaEnv, str);
+//	(*javaEnv)->DeleteLocalRef(javaEnv, method);
+	releasejavaArgs(javaEnv, javaArgArray);
 
 	/* Handles exception */
 	jobject jstr = checkException(javaEnv);
@@ -737,24 +796,27 @@ ljJavaObject_t* runObjectMethod(ljJavaObject_t* objectInterface, const char * me
 		cStr = (*javaEnv)->GetStringUTFChars(javaEnv, jstr, NULL);
 		fprintf(stderr, "Error. exception while getting method of object : %s\n", cStr);
 		(*javaEnv)->ReleaseStringUTFChars(javaEnv, jstr, cStr);
+		(*javaEnv)->DeleteLocalRef(javaEnv, jstr);
 		return NULL;
 	}
 
 	if (resultObj != NULL && !(*javaEnv)->IsSameObject(javaEnv, resultObj, NULL)) {
 		returnObject = malloc(sizeof(ljJavaObject_t));
-		returnObject->javaEnv = (void*)javaEnv;
+		returnObject->ljEnv = objectInterface->ljEnv;
 		returnObject->object = (*javaEnv)->NewGlobalRef(javaEnv, resultObj);
+		(*javaEnv)->DeleteLocalRef(javaEnv, resultObj);
 		return returnObject;
 	}
 	return NULL;
 }
 
-int getObjectType(ljJavaObject_t* objectInterface) {
+int internal_javaGetObjectType(ljJavaObject_t* objectInterface) {
 	JNIEnv * javaEnv;
 	jobject object;
 	jclass objectClass;
+	int returnValue = JTYPE_NONE;
 
-	javaEnv = (JNIEnv *)objectInterface->javaEnv;
+	javaEnv = ((ljJavaEnvironment_t*)objectInterface->ljEnv)->javaEnv;
 	(*javaEnv)->ExceptionClear(javaEnv);
 	object = (jobject)objectInterface->object;
 
@@ -766,38 +828,36 @@ int getObjectType(ljJavaObject_t* objectInterface) {
 		cStr = (*javaEnv)->GetStringUTFChars(javaEnv, jstr, NULL);
 		fprintf(stderr, "Error. exception while getting method of object : %s\n", cStr);
 		(*javaEnv)->ReleaseStringUTFChars(javaEnv, jstr, cStr);
-		return JTYPE_NONE;
+		(*javaEnv)->DeleteLocalRef(javaEnv, jstr);
+		return returnValue;
 	}
 	if ((*javaEnv)->IsAssignableFrom(javaEnv, objectClass, java_byte_class)) {
-		return JTYPE_BYTE;
-	}
-	if ((*javaEnv)->IsAssignableFrom(javaEnv, objectClass, java_short_class)) {
-		return JTYPE_SHORT;
+		returnValue = JTYPE_BYTE;
+	} else if ((*javaEnv)->IsAssignableFrom(javaEnv, objectClass, java_short_class)) {
+		returnValue = JTYPE_SHORT;
 	}
 	if ((*javaEnv)->IsAssignableFrom(javaEnv, objectClass, java_int_class)) {
-		return JTYPE_INT;
+		returnValue = JTYPE_INT;
+	} else if ((*javaEnv)->IsAssignableFrom(javaEnv, objectClass, java_long_class)) {
+		returnValue = JTYPE_LONG;
+	} else if ((*javaEnv)->IsAssignableFrom(javaEnv, objectClass, java_float_class)) {
+		returnValue = JTYPE_FLOAT;
+	} else if ((*javaEnv)->IsAssignableFrom(javaEnv, objectClass, java_double_class)) {
+		returnValue = JTYPE_DOUBLE;
+	} else if ((*javaEnv)->IsAssignableFrom(javaEnv, objectClass, java_boolean_class)) {
+		returnValue = JTYPE_BOOLEAN;
+	} else if ((*javaEnv)->IsAssignableFrom(javaEnv, objectClass, java_string_class)) {
+		returnValue = JTYPE_STRING;
+	} else {
+		returnValue = JTYPE_OBJECT;
 	}
-	if ((*javaEnv)->IsAssignableFrom(javaEnv, objectClass, java_long_class)) {
-		return JTYPE_LONG;
-	}
-	if ((*javaEnv)->IsAssignableFrom(javaEnv, objectClass, java_float_class)) {
-		return JTYPE_FLOAT;
-	}
-	if ((*javaEnv)->IsAssignableFrom(javaEnv, objectClass, java_double_class)) {
-		return JTYPE_DOUBLE;
-	}
-	if ((*javaEnv)->IsAssignableFrom(javaEnv, objectClass, java_boolean_class)) {
-		return JTYPE_BOOLEAN;
-	}
-	if ((*javaEnv)->IsAssignableFrom(javaEnv, objectClass, java_string_class)) {
-		return JTYPE_STRING;
-	}
-	return JTYPE_OBJECT;
+	(*javaEnv)->DeleteLocalRef(javaEnv, objectClass);
+	return returnValue;
 }
 
-int getObjectIntValue(ljJavaObject_t* objectInterface) {
-	JNIEnv * javaEnv = (JNIEnv *)objectInterface->javaEnv;
-	switch (getObjectType(objectInterface)) {
+int internal_javaGetObjectIntValue(ljJavaObject_t* objectInterface) {
+	JNIEnv * javaEnv = ((ljJavaEnvironment_t*)objectInterface->ljEnv)->javaEnv;
+	switch (internal_javaGetObjectType(objectInterface)) {
 	case JTYPE_BYTE:
 		return (*javaEnv)->CallIntMethod(javaEnv, objectInterface->object, java_byte_value);
 		break;
@@ -813,35 +873,486 @@ int getObjectIntValue(ljJavaObject_t* objectInterface) {
 	fprintf(stderr, "Trying to access int value of a non int type\n");
 	return 0;
 }
-long getObjectLongValue(ljJavaObject_t* objectInterface) {
-	JNIEnv * javaEnv = (JNIEnv *)objectInterface->javaEnv;
-	if (getObjectType(objectInterface) == JTYPE_LONG) {
+long internal_javaGetObjectLongValue(ljJavaObject_t* objectInterface) {
+	JNIEnv * javaEnv = ((ljJavaEnvironment_t*)objectInterface->ljEnv)->javaEnv;
+	if (internal_javaGetObjectType(objectInterface) == JTYPE_LONG) {
 		return (long) (*javaEnv)->CallLongMethod(javaEnv, objectInterface->object, java_long_value);
 	}
 	fprintf(stderr, "Trying to access int value of a non int type\n");
 	return 0;
 }
-float getObjectFloatValue(ljJavaObject_t* objectInterface) {
-	JNIEnv * javaEnv = (JNIEnv *)objectInterface->javaEnv;
-	if (getObjectType(objectInterface) == JTYPE_FLOAT) {
+float internal_javaGetObjectFloatValue(ljJavaObject_t* objectInterface) {
+	JNIEnv * javaEnv = ((ljJavaEnvironment_t*)objectInterface->ljEnv)->javaEnv;
+	if (internal_javaGetObjectType(objectInterface) == JTYPE_FLOAT) {
 		return (*javaEnv)->CallFloatMethod(javaEnv, objectInterface->object, java_float_value);
 	}
 	fprintf(stderr, "Trying to access float value of a non float type\n");
 	return 0;
 }
-double getObjectDoubleValue(ljJavaObject_t* objectInterface) {
-	JNIEnv * javaEnv = (JNIEnv *)objectInterface->javaEnv;
-	if (getObjectType(objectInterface) == JTYPE_DOUBLE) {
+double internal_javaGetObjectDoubleValue(ljJavaObject_t* objectInterface) {
+	JNIEnv * javaEnv = ((ljJavaEnvironment_t*)objectInterface->ljEnv)->javaEnv;
+	if (internal_javaGetObjectType(objectInterface) == JTYPE_DOUBLE) {
 		return (*javaEnv)->CallDoubleMethod(javaEnv, objectInterface->object, java_double_value);
 	}
 	fprintf(stderr, "Trying to access double value of a non double type\n");
 	return 0;
 }
-const char* getObjectStringValue(ljJavaObject_t* objectInterface) {
-	JNIEnv * javaEnv = (JNIEnv *)objectInterface->javaEnv;
-	if (getObjectType(objectInterface) == JTYPE_STRING) {
+const char* internal_javaGetObjectStringValue(ljJavaObject_t* objectInterface) {
+	JNIEnv * javaEnv = ((ljJavaEnvironment_t*)objectInterface->ljEnv)->javaEnv;
+	if (internal_javaGetObjectType(objectInterface) == JTYPE_STRING) {
 		return (*javaEnv)->GetStringUTFChars(javaEnv, (jstring)objectInterface->object, NULL);
 	}
 	fprintf(stderr, "Trying to access string value of a non string type\n");
 	return NULL;
 }
+void internal_javaReleaseStringValue(ljJavaObject_t* objectInterface, const char* stringValue) {
+	JNIEnv * javaEnv = ((ljJavaEnvironment_t*)objectInterface->ljEnv)->javaEnv;
+	(*javaEnv)->ReleaseStringUTFChars(javaEnv, (jstring)objectInterface->object, stringValue);
+}
+
+/***************************************************************
+      JAVA THREAD MANAGEMENT
+****************************************************************/
+
+static HANDLE javaThreadHandle;
+static HANDLE javaCallEvent;
+static HANDLE javaCallTreatedEvent;
+static long javaThreadTimeout = 5000L;
+
+typedef enum javaCallMethod {
+	JAVACALL_METHOD_NONE,
+	JAVACALL_METHOD_ENDJAVA,
+	JAVACALL_METHOD_BINDCLASS,
+	JAVACALL_METHOD_RELEASECLASS,
+	JAVACALL_METHOD_NEW,
+	JAVACALL_METHOD_RELEASEOBJECT,
+	JAVACALL_METHOD_CHECKCLASSFIELD,
+	JAVACALL_METHOD_RUNCLASSMETHOD,
+	JAVACALL_METHOD_CHECKOBJECTFIELD,
+	JAVACALL_METHOD_RUNOBJECTMETHOD,
+	JAVACALL_METHOD_GETOBJECTTYPE,
+	JAVACALL_METHOD_GETOBJECTINTVALUE,
+	JAVACALL_METHOD_GETOBJECTLONGVALUE,
+	JAVACALL_METHOD_GETOBJECTFLOATVALUE,
+	JAVACALL_METHOD_GETOBJECTDOUBLEVALUE,
+	JAVACALL_METHOD_GETOBJECTSTRINGVALUE,
+	JAVACALL_METHOD_RELEASESTRINGVALUE
+} javaCallMethod_t;
+
+static void* currentCallData;
+static void* currentCallReturnPointer;
+static int currentCallReturnInt;
+static long currentCallReturnLong;
+static float currentCallReturnFloat;
+static double currentCallReturnDouble;
+static javaCallMethod_t currentCallMethod = JAVACALL_METHOD_NONE;
+
+//static params for each call
+typedef struct javaStart_params {
+	const char* classPath;
+} javaStart_params_t;
+typedef struct javaBindClass_params {
+	ljJavaClass_t* classInterface;
+	const char* className;
+} javaBindClass_params_t;
+typedef struct javaNew_params {
+	ljJavaObject_t* objectInterface;
+	ljJavaClass_t* classInterface;
+	int nArgs;
+	va_list valist;
+} javaNew_params_t;
+typedef struct javaCheckClassField_params {
+	ljJavaClass_t* classInterface;
+	const char* key;
+} javaCheckClassField_params_t;
+typedef struct javaRunClassMethod_params {
+	ljJavaClass_t* classInterface;
+	const char* methodName;
+	int nArgs;
+	va_list valist;
+} javaRunClassMethod_params_t;
+typedef struct javaCheckObjectField_params {
+	ljJavaObject_t* objectInterface;
+	const char* key;
+} javaCheckObjectField_params_t;
+typedef struct javaRunObjectMethod_params {
+	ljJavaObject_t* objectInterface;
+	const char* methodName;
+	int nArgs;
+	va_list valist;
+} javaRunObjectMethod_params_t;
+typedef struct javaReleaseStringValue_params {
+	ljJavaObject_t* objectInterface;
+	const char* stringValue;
+} javaReleaseStringValue_params_t;
+
+
+//thread launching the JVM, treating calls and ending the jvm
+DWORD WINAPI javaThread(LPVOID args)
+{
+	void* ljJavaEnv;
+
+	//start java environment
+	ljJavaEnv = internal_javaStart( ((javaStart_params_t*)currentCallData)->classPath);
+	currentCallReturnPointer = ljJavaEnv;
+	SetEvent(javaCallTreatedEvent);//will
+
+	BOOL loop = TRUE;
+	while (loop) {
+		WaitForSingleObject(javaCallEvent, javaThreadTimeout);
+
+		switch (currentCallMethod) {
+		case JAVACALL_METHOD_BINDCLASS:
+			currentCallReturnInt = internal_javaBindClass(
+				((javaBindClass_params_t*)currentCallData)->classInterface,
+				((javaBindClass_params_t*)currentCallData)->className );
+			break;
+		case JAVACALL_METHOD_RELEASECLASS:
+			internal_javaReleaseClass((ljJavaClass_t*)currentCallData);
+			break;
+		case JAVACALL_METHOD_NEW:
+			currentCallReturnInt = internal_javaNew(
+				((javaNew_params_t*)currentCallData)->objectInterface,
+				((javaNew_params_t*)currentCallData)->classInterface,
+				((javaNew_params_t*)currentCallData)->nArgs,
+				((javaNew_params_t*)currentCallData)->valist);
+			break;
+		case JAVACALL_METHOD_RELEASEOBJECT:
+			internal_javaReleaseObject((ljJavaObject_t*)currentCallData);
+			break;
+		case JAVACALL_METHOD_CHECKCLASSFIELD:
+			currentCallReturnPointer = internal_javaCheckClassField(
+				((javaCheckClassField_params_t*)currentCallData)->classInterface,
+				((javaCheckClassField_params_t*)currentCallData)->key);
+			break;
+		case JAVACALL_METHOD_RUNCLASSMETHOD:
+			currentCallReturnPointer = internal_javaRunClassMethod(
+				((javaRunClassMethod_params_t*)currentCallData)->classInterface,
+				((javaRunClassMethod_params_t*)currentCallData)->methodName,
+				((javaRunClassMethod_params_t*)currentCallData)->nArgs,
+				((javaRunClassMethod_params_t*)currentCallData)->valist);
+			break;
+		case JAVACALL_METHOD_CHECKOBJECTFIELD:
+			currentCallReturnPointer = internal_javaCheckObjectField(
+				((javaCheckObjectField_params_t*)currentCallData)->objectInterface,
+				((javaCheckObjectField_params_t*)currentCallData)->key);
+			break;
+		case JAVACALL_METHOD_RUNOBJECTMETHOD:
+			currentCallReturnPointer = internal_javaRunObjectMethod(
+				((javaRunObjectMethod_params_t*)currentCallData)->objectInterface,
+				((javaRunObjectMethod_params_t*)currentCallData)->methodName,
+				((javaRunObjectMethod_params_t*)currentCallData)->nArgs,
+				((javaRunObjectMethod_params_t*)currentCallData)->valist);
+			break;
+			case JAVACALL_METHOD_GETOBJECTTYPE:
+				currentCallReturnInt = internal_javaGetObjectType((ljJavaObject_t*)currentCallData);
+				break;
+			case JAVACALL_METHOD_GETOBJECTINTVALUE:
+				currentCallReturnInt = internal_javaGetObjectIntValue((ljJavaObject_t*)currentCallData);
+				break;
+			case JAVACALL_METHOD_GETOBJECTLONGVALUE:
+				currentCallReturnLong = internal_javaGetObjectLongValue((ljJavaObject_t*)currentCallData);
+				break;
+			case JAVACALL_METHOD_GETOBJECTFLOATVALUE:
+				currentCallReturnFloat = internal_javaGetObjectFloatValue((ljJavaObject_t*)currentCallData);
+				break;
+			case JAVACALL_METHOD_GETOBJECTDOUBLEVALUE:
+				currentCallReturnDouble = internal_javaGetObjectDoubleValue((ljJavaObject_t*)currentCallData);
+				break;
+			case JAVACALL_METHOD_GETOBJECTSTRINGVALUE:
+				currentCallReturnPointer = (void*) internal_javaGetObjectStringValue((ljJavaObject_t*)currentCallData);
+				break;
+			case JAVACALL_METHOD_RELEASESTRINGVALUE:
+				internal_javaReleaseStringValue(
+					((javaReleaseStringValue_params_t*)currentCallData)->objectInterface,
+					((javaReleaseStringValue_params_t*)currentCallData)->stringValue);
+				break;
+
+		}
+		if (currentCallMethod == JAVACALL_METHOD_ENDJAVA) {
+			loop = FALSE;
+		}
+		else {
+			SetEvent(javaCallTreatedEvent);
+		}
+	}
+	fprintf(stdout, "thread exiting\n");
+
+	//stop java
+	internal_javaEnd(ljJavaEnv);
+
+	//cleanup
+	CloseHandle(javaCallEvent);
+	CloseHandle(javaCallTreatedEvent);
+
+	fprintf(stdout, "thread over\n");
+
+	return 1;
+}
+
+
+/***************************************************************
+		LUA CALLED METHODS
+****************************************************************/
+
+// start the java thread and init bindings
+void* javaStart(const char* classPath) {
+	// create an event for java calls in the jvm thread
+	javaCallEvent = CreateEvent(
+		NULL,               // default security attributes
+		FALSE,               // event will be reset after it unblocks the treatment
+		FALSE,              // initial state is nonsignaled
+		TEXT("JavaCallEvent")  // name
+		);
+	// create an event for java treament over coming from jvm thread
+	javaCallTreatedEvent = CreateEvent(
+		NULL,               // default security attributes
+		FALSE,               // event will be reset after the lua call thread has been unblocked
+		FALSE,              // initial state is nonsignaled
+		TEXT("JavaCallTreatedEvent")  // name
+		);
+
+	javaStart_params_t* java_params = malloc(sizeof(javaStart_params_t));
+	java_params->classPath = classPath;
+	currentCallData = java_params;
+	javaThreadHandle = CreateThread(0, 0,
+		javaThread, 0, 0, 0);
+
+	WaitForSingleObject(javaCallTreatedEvent, javaThreadTimeout);
+	//clean params
+	free(java_params);
+	currentCallData = NULL;
+
+	return currentCallReturnPointer;
+}
+
+void javaEnd(void* ljEnv)
+{
+	currentCallMethod = JAVACALL_METHOD_ENDJAVA;
+	SetEvent(javaCallEvent);
+	WaitForSingleObject(javaCallTreatedEvent, javaThreadTimeout);
+}
+
+int javaBindClass(ljJavaClass_t* classInterface, const char* className) {
+	currentCallMethod = JAVACALL_METHOD_BINDCLASS;
+	javaBindClass_params_t* java_params = malloc(sizeof(javaBindClass_params_t));
+	java_params->classInterface = classInterface;
+	java_params->className = className;
+	currentCallData = java_params;
+
+	SetEvent(javaCallEvent);
+	WaitForSingleObject(javaCallTreatedEvent, javaThreadTimeout);
+
+	//clean params
+	free(java_params);
+	currentCallData = NULL;
+
+	return currentCallReturnInt;
+}
+
+void javaReleaseClass(ljJavaClass_t* classInterface) {
+	currentCallMethod = JAVACALL_METHOD_RELEASECLASS;
+	currentCallData = classInterface;
+
+	SetEvent(javaCallEvent);
+	WaitForSingleObject(javaCallTreatedEvent, javaThreadTimeout);
+
+	//clean params
+	currentCallData = NULL;
+}
+
+int javaNew(ljJavaObject_t* objectInterface, ljJavaClass_t* classInterface, int nArgs, ...) {
+	va_list valist;
+	va_start(valist, nArgs);
+
+	currentCallMethod = JAVACALL_METHOD_NEW;
+	javaNew_params_t* java_params = malloc(sizeof(javaNew_params_t));
+	java_params->objectInterface = objectInterface;
+	java_params->classInterface = classInterface;
+	java_params->nArgs = nArgs;
+	java_params->valist = valist;
+	currentCallData = java_params;
+
+	SetEvent(javaCallEvent);
+	WaitForSingleObject(javaCallTreatedEvent, javaThreadTimeout);
+
+	//clean params
+	free(java_params);
+	currentCallData = NULL;
+
+	return currentCallReturnInt;
+}
+
+void javaReleaseObject(ljJavaObject_t* objectInterface) {
+	currentCallMethod = JAVACALL_METHOD_RELEASEOBJECT;
+	currentCallData = objectInterface;
+
+	SetEvent(javaCallEvent);
+	WaitForSingleObject(javaCallTreatedEvent, javaThreadTimeout);
+
+	//clean params
+	currentCallData = NULL;
+}
+
+ljJavaObject_t* javaCheckClassField(ljJavaClass_t* classInterface, const char * key) {
+	currentCallMethod = JAVACALL_METHOD_CHECKCLASSFIELD;
+	javaCheckClassField_params_t* java_params = malloc(sizeof(javaCheckClassField_params_t));
+	java_params->classInterface = classInterface;
+	java_params->key = key;
+	currentCallData = java_params;
+
+	SetEvent(javaCallEvent);
+	WaitForSingleObject(javaCallTreatedEvent, javaThreadTimeout);
+
+	//clean params
+	free(java_params);
+	currentCallData = NULL;
+
+	return currentCallReturnPointer;
+}
+ljJavaObject_t* javaRunClassMethod(ljJavaClass_t* classInterface, const char * methodName, int nArgs, ...) {
+	va_list valist;
+	va_start(valist, nArgs);
+
+	currentCallMethod = JAVACALL_METHOD_RUNCLASSMETHOD;
+	javaRunClassMethod_params_t* java_params = malloc(sizeof(javaRunClassMethod_params_t));
+	java_params->classInterface = classInterface;
+	java_params->methodName = methodName;
+	java_params->nArgs = nArgs;
+	java_params->valist = valist;
+	currentCallData = java_params;
+
+	SetEvent(javaCallEvent);
+	WaitForSingleObject(javaCallTreatedEvent, javaThreadTimeout);
+
+	//clean params
+	free(java_params);
+	currentCallData = NULL;
+
+	return currentCallReturnPointer;
+}
+
+ljJavaObject_t* javaCheckObjectField(ljJavaObject_t* objectInterface, const char * key) {
+	currentCallMethod = JAVACALL_METHOD_CHECKOBJECTFIELD;
+	javaCheckObjectField_params_t* java_params = malloc(sizeof(javaCheckObjectField_params_t));
+	java_params->objectInterface = objectInterface;
+	java_params->key = key;
+	currentCallData = java_params;
+
+	SetEvent(javaCallEvent);
+	WaitForSingleObject(javaCallTreatedEvent, javaThreadTimeout);
+
+	//clean params
+	free(java_params);
+	currentCallData = NULL;
+
+	return currentCallReturnPointer;
+}
+ljJavaObject_t* javaRunObjectMethod(ljJavaObject_t* objectInterface, const char * methodName, int nArgs, ...) {
+	va_list valist;
+	va_start(valist, nArgs);
+
+	currentCallMethod = JAVACALL_METHOD_RUNOBJECTMETHOD;
+	javaRunObjectMethod_params_t* java_params = malloc(sizeof(javaRunObjectMethod_params_t));
+	java_params->objectInterface = objectInterface;
+	java_params->methodName = methodName;
+	java_params->nArgs = nArgs;
+	java_params->valist = valist;
+	currentCallData = java_params;
+
+	SetEvent(javaCallEvent);
+	WaitForSingleObject(javaCallTreatedEvent, javaThreadTimeout);
+
+	//clean params
+	free(java_params);
+	currentCallData = NULL;
+
+	return currentCallReturnPointer;
+}
+
+int javaGetObjectType(ljJavaObject_t* objectInterface) {
+	currentCallMethod = JAVACALL_METHOD_GETOBJECTTYPE;
+	currentCallData = objectInterface;
+
+	SetEvent(javaCallEvent);
+	WaitForSingleObject(javaCallTreatedEvent, javaThreadTimeout);
+
+	//clean params
+	currentCallData = NULL;
+
+	return currentCallReturnInt;
+}
+int javaGetObjectIntValue(ljJavaObject_t* objectInterface) {
+	currentCallMethod = JAVACALL_METHOD_GETOBJECTINTVALUE;
+	currentCallData = objectInterface;
+
+	SetEvent(javaCallEvent);
+	WaitForSingleObject(javaCallTreatedEvent, javaThreadTimeout);
+
+	//clean params
+	currentCallData = NULL;
+
+	return currentCallReturnInt;
+}
+long javaGetObjectLongValue(ljJavaObject_t* objectInterface) {
+	currentCallMethod = JAVACALL_METHOD_GETOBJECTLONGVALUE;
+	currentCallData = objectInterface;
+
+	SetEvent(javaCallEvent);
+	WaitForSingleObject(javaCallTreatedEvent, javaThreadTimeout);
+
+	//clean params
+	currentCallData = NULL;
+
+	return currentCallReturnLong;
+}
+float javaGetObjectFloatValue(ljJavaObject_t* objectInterface) {
+	currentCallMethod = JAVACALL_METHOD_GETOBJECTFLOATVALUE;
+	currentCallData = objectInterface;
+
+	SetEvent(javaCallEvent);
+	WaitForSingleObject(javaCallTreatedEvent, javaThreadTimeout);
+
+	//clean params
+	currentCallData = NULL;
+
+	return currentCallReturnFloat;
+}
+double javaGetObjectDoubleValue(ljJavaObject_t* objectInterface) {
+	currentCallMethod = JAVACALL_METHOD_GETOBJECTDOUBLEVALUE;
+	currentCallData = objectInterface;
+
+	SetEvent(javaCallEvent);
+	WaitForSingleObject(javaCallTreatedEvent, javaThreadTimeout);
+
+	//clean params
+	currentCallData = NULL;
+
+	return currentCallReturnDouble;
+}
+const char* javaGetObjectStringValue(ljJavaObject_t* objectInterface) {
+	currentCallMethod = JAVACALL_METHOD_GETOBJECTSTRINGVALUE;
+	currentCallData = objectInterface;
+
+	SetEvent(javaCallEvent);
+	WaitForSingleObject(javaCallTreatedEvent, javaThreadTimeout);
+
+	//clean params
+	currentCallData = NULL;
+
+	return currentCallReturnPointer;
+}
+void javaReleaseStringValue(ljJavaObject_t* objectInterface, const char* stringValue) {
+	currentCallMethod = JAVACALL_METHOD_RELEASESTRINGVALUE;
+	javaReleaseStringValue_params_t* java_params = malloc(sizeof(javaReleaseStringValue_params_t));
+	java_params->objectInterface = objectInterface;
+	java_params->stringValue = stringValue;
+	currentCallData = java_params;
+
+	SetEvent(javaCallEvent);
+	WaitForSingleObject(javaCallTreatedEvent, javaThreadTimeout);
+
+	//clean params
+	currentCallData = NULL;
+}
+
