@@ -1,6 +1,6 @@
 local luajitjava = {}
 
-local LUAJITJAVA_DLL = "luajitjava.debug.dll"
+local LUAJITJAVA_DLL = "luajitjava.dll"
 local LUAJITJAVA_JAR = "luajitjava.jar"
 
 --get current dir
