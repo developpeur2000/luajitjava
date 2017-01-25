@@ -919,6 +919,7 @@ DWORD WINAPI javaThread(LPVOID args)
 		LUA CALLED METHODS
 ****************************************************************/
 
+/*
 // start the java thread and init bindings
 void* javaStart(const char* classPath) {
 	// create an event for java calls in the jvm thread
@@ -1179,4 +1180,74 @@ void javaReleaseStringValue(ljJavaObject_t* objectInterface, const char* stringV
 	//clean params
 	currentCallData = NULL;
 }
+*/
 
+void* javaStart(const char* classPath) {
+	return internal_javaStart(classPath);
+}
+
+void javaEnd(void* ljEnv)
+{
+	internal_javaEnd(ljEnv);
+}
+
+int javaBindClass(ljJavaClass_t* classInterface, const char* className) {
+	return internal_javaBindClass(classInterface, className);
+}
+
+void javaReleaseClass(ljJavaClass_t* classInterface) {
+	internal_javaReleaseClass(classInterface);
+}
+
+int javaNew(ljJavaObject_t* objectInterface, ljJavaClass_t* classInterface, int nArgs, ...) {
+	va_list valist;
+	va_start(valist, nArgs);
+
+	return internal_javaNew(objectInterface, classInterface, nArgs, valist);
+}
+
+void javaReleaseObject(ljJavaObject_t* objectInterface) {
+	internal_javaReleaseObject(objectInterface);
+}
+
+ljJavaObject_t* javaCheckClassField(ljJavaClass_t* classInterface, const char * key) {
+	return internal_javaCheckClassField(classInterface, key);
+}
+ljJavaObject_t* javaRunClassMethod(ljJavaClass_t* classInterface, const char * methodName, int nArgs, ...) {
+	va_list valist;
+	va_start(valist, nArgs);
+
+	return internal_javaRunClassMethod(classInterface, methodName, nArgs, valist);
+}
+
+ljJavaObject_t* javaCheckObjectField(ljJavaObject_t* objectInterface, const char * key) {
+	return internal_javaCheckObjectField(objectInterface, key);
+}
+ljJavaObject_t* javaRunObjectMethod(ljJavaObject_t* objectInterface, const char * methodName, int nArgs, ...) {
+	va_list valist;
+	va_start(valist, nArgs);
+
+	return internal_javaRunObjectMethod(objectInterface, methodName, nArgs, valist);
+}
+
+int javaGetObjectType(ljJavaObject_t* objectInterface) {
+	return internal_javaGetObjectType(objectInterface);
+}
+int javaGetObjectIntValue(ljJavaObject_t* objectInterface) {
+	return internal_javaGetObjectIntValue(objectInterface);
+}
+long javaGetObjectLongValue(ljJavaObject_t* objectInterface) {
+	return internal_javaGetObjectLongValue(objectInterface);
+}
+float javaGetObjectFloatValue(ljJavaObject_t* objectInterface) {
+	return internal_javaGetObjectFloatValue(objectInterface);
+}
+double javaGetObjectDoubleValue(ljJavaObject_t* objectInterface) {
+	return internal_javaGetObjectDoubleValue(objectInterface);
+}
+const char* javaGetObjectStringValue(ljJavaObject_t* objectInterface) {
+	return internal_javaGetObjectStringValue(objectInterface);
+}
+void javaReleaseStringValue(ljJavaObject_t* objectInterface, const char* stringValue) {
+	internal_javaReleaseStringValue(objectInterface, stringValue);
+}
