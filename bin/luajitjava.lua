@@ -82,9 +82,7 @@ function luajitjava.java_init(class_path)
   if lj_env then
     return
   end
-  print('java start')
   lj_env = luajitjava_bindings.javaStart(string.format("%s;%s%s", class_path, current_dir, LUAJITJAVA_JAR))
-  print('java env : ', lj_env)
 end
 
 function luajitjava.java_end()
@@ -280,7 +278,6 @@ function luajitjava.get_java_class(class_name)
   end
   local new_class = JavaClassType(lj_env)
   if (luajitjava_bindings.javaBindClass(new_class, class_name) ~= 0) then
-    print("binding class", class_name, new_class)
     return new_class
   else
     return nil
